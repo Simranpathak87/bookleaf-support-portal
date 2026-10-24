@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BookLeaf Support Portal</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<div class="wrap" style="max-width:420px;margin-top:60px">
+  <div class="card">
+    <h2>BookLeaf Support Portal</h2>
+    <label>Email</label><input id="email" type="email">
+    <label>Password</label><input id="password" type="password">
+    <button onclick="login()">Log in</button>
+    <p id="err" class="err"></p>
+    <p class="muted">Demo: priya.sharma@email.com / Author@123<br>Admin: admin@bookleaf.com / Admin@123</p>
+  </div>
+</div>
+<script src="common.js"></script>
+<script>
+async function login() {
+  document.getElementById('err').textContent = '';
+  try {
+    const r = await api('/api/auth/login', 'POST', {
+      email: document.getElementById('email').value,
+      password: document.getElementById('password').value });
+    localStorage.setItem('token', r.token);
+    localStorage.setItem('role', r.role);
+    localStorage.setItem('name', r.name);
+    location.href = r.role === 'ADMIN' ? '/admin.html' : '/author.html';
+  } catch (e) { document.getElementById('err').textContent = e.message; }
+}
+document.addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+</script>
+</body></html>

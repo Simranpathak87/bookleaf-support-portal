@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin Portal</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><b>BookLeaf Admin</b><span><span id="who"></span> <button class="sec" onclick="logout()">Logout</button></span></header>
+<div class="wrap">
+  <h3>Ticket queue</h3>
+  <div class="filters card">
+    <select id="f_status"></select><select id="f_category"></select><select id="f_priority"></select>
+    <input id="f_from" type="date"><input id="f_to" type="date">
+    <button onclick="loadQueue()">Apply</button>
+  </div>
+  <div class="scroll"><table id="queue"></table></div>
+
+  <div id="panel" class="card" hidden style="margin-top:16px">
+    <div id="detail"></div>
+
+    <h4>Reply to author</h4>
+    <button class="sec" onclick="loadDraft(false)">Generate AI draft</button>
+    <button class="sec" onclick="loadDraft(true)">Regenerate</button>
+    <span id="aiMsg" class="muted"></span>
+    <textarea id="replyBody" rows="8" placeholder="Write or edit the reply here"></textarea>
+    <button onclick="sendReply()">Send reply</button>
+
+    <h4>Internal note (not visible to author)</h4>
+    <textarea id="noteBody" rows="3"></textarea>
+    <button class="sec" onclick="addNote()">Add note</button>
+    <p id="actMsg" class="err"></p>
+  </div>
+</div>
+<script src="common.js"></script>
+<script>
+requireRole('ADMIN');
+const CATS = ['ROYALTY_PAYMENTS','ISBN_METADATA','PRINTING_QUALITY','DISTRIBUTION_AVAILABILITY','BOOK_STATUS_PRODUCTION','GENERAL_INQUIRY','UNCLASSIFIED'];
+const PRIS = ['CRITICAL','HIGH','MEDIUM','LOW'];
+const STS = ['OPEN','IN_PROGRESS','RESOLVED','CLOSED'];
+let currentId = null;
+
+const opts = (list, sel) => list.map(v => `<option ${v === sel ? 'selected' : ''}>${v}</option>`).join('');
+const filterOpts = (label, list) => `<option value="">${label}</option>` + opts(list);
+document.getElementById('f_status').innerHTML = filterOpts('All statuses', STS);
+document.getElementById('f_category').innerHTML = filterOpts('All categories', CATS);
+document.getElementById('f_priority').innerHTML = filterOpts('All priorities', PRIS);
+
+async function loadQueue() {
+  const p = new URLSearchParams();
+  ['status', 'category', 'priority', 'from', 'to'].forEach(k => {
+    const v = document.getElementById('f_' + k).value;
+    if (v) p.append(k, v);
+  });
+  const rows = await api('/api/admin/tickets?' + p);
+  const q = document.getElementById('queue');
+  if (!rows.length) { q.innerHTML = '<tr><td>No tickets match these filters.</td></tr>'; return; }
+  q.innerHTML = '<tr><th>#</th><th>Priority</th><th>Subject</th><th>Author</th><th>Category</th><th>Status</th><th>Age</th><th>Assigned</th></tr>' +
+    rows.map(t => `<tr class="row" onclick="openTicket(${t.id})">
+      <td>${t.id}</td><td><span class="badge ${t.priority}">${t.priority}</span></td>
+      <td>${esc(t.subject)}</td><td>${esc(t.authorName)}</td><td>${t.category.replace(/_/g, ' ')}</td>
+      <td><span class="badge ${t.status}">${t.status.replace('_', ' ')}</span></td>
+      <td class="${t.ageHours > 48 && (t.status === 'OPEN' || t.status === 'IN_PROGRESS') ? 'old' : ''}">${t.ageHours}h</td>
+      <td>${esc(t.assignedTo || '—')}</td></tr>`).join('');
+}
+
+async function openTicket(id) {
+  currentId = id;
+  document.getElementById('replyBody').value = '';
+  document.getElementById('aiMsg').textContent = '';
+  document.getElementById('actMsg').textContent = '';
+  renderDetail(await api('/api/admin/tickets/' + id));
+  document.getElementById('panel').hidden = false;
+  document.getElementById('panel').scrollIntoView();
+}
+
+function renderDetail(t) {
+  document.getElementById('detail').innerHTML = `
+    <h3>#${t.id} ${esc(t.subject)}</h3>
+    <div class="muted">${esc(t.authorName)} (${esc(t.authorEmail)}) · ${esc(t.bookTitle)} · ${dt(t.createdAt)}
+      · AI: ${esc(t.aiStatus || 'pending')}${t.attachmentName ? ' · 📎 ' + esc(t.attachmentName) : ''}</div>
+    <div class="filters" style="margin:10px 0">
+      <label>Category ${t.categoryOverridden ? '(overridden)' : ''}<select onchange="patch('category', this.value)">${opts(CATS, t.category)}</select></label>
+      <label>Priority ${t.priorityOverridden ? '(overridden)' : ''}<select onchange="patch('priority', this.value)">${opts(PRIS, t.priority)}</select></label>
+      <label>Status<select onchange="patch('status', this.value)">${opts(STS, t.status)}</select></label>
+      <button onclick="assign()">${t.assignedTo ? 'Assigned: ' + esc(t.assignedTo) : 'Assign to me'}</button>
+    </div>
+    <div class="msg AUTHOR">${esc(t.description)}</div>
+    ${t.messages.map(m => `<div class="msg ${m.senderRole}"><b>${esc(m.senderName)}</b> <span class="muted">${dt(m.createdAt)}</span><br>${esc(m.body)}</div>`).join('')}
+    ${t.notes.length ? '<h4>Internal notes</h4>' + t.notes.map(n => `<div class="note"><b>${esc(n.adminName)}</b> <span class="muted">${dt(n.createdAt)}</span><br>${esc(n.body)}</div>`).join('') : ''}`;
+}
+
+async function act(fn) {
+  document.getElementById('actMsg').textContent = '';
+  try { renderDetail(await fn()); loadQueue(); }
+  catch (e) { document.getElementById('actMsg').textContent = e.message; }
+}
+const patch = (field, value) => act(() => api(`/api/admin/tickets/${currentId}/${field}`, 'PATCH', { [field]: value }));
+const assign = () => act(() => api(`/api/admin/tickets/${currentId}/assign-to-me`, 'POST'));
+
+async function addNote() {
+  const body = document.getElementById('noteBody').value.trim();
+  if (!body) return;
+  await act(() => api(`/api/admin/tickets/${currentId}/notes`, 'POST', { body }));
+  document.getElementById('noteBody').value = '';
+}
+
+async function sendReply() {
+  const body = document.getElementById('replyBody').value.trim();
+  if (!body) return;
+  await act(() => api(`/api/admin/tickets/${currentId}/replies`, 'POST', { body }));
+  document.getElementById('replyBody').value = '';
+}
+
+async function loadDraft(regen) {
+  const msg = document.getElementById('aiMsg');
+  msg.className = 'muted'; msg.textContent = 'Generating draft... (can take up to a minute)';
+  try {
+    const url = `/api/admin/tickets/${currentId}/ai-draft` + (regen ? '/regenerate' : '');
+    const r = await api(url, regen ? 'POST' : 'GET');
+    document.getElementById('replyBody').value = r.draft;
+    msg.textContent = 'AI draft loaded. Please review and edit before sending.';
+  } catch (e) {
+    msg.className = 'err';
+    msg.textContent = e.status === 503 ? 'AI is unavailable right now. Please write the reply manually.' : e.message;
+  }
+}
+
+loadQueue();
+setInterval(loadQueue, 5000); // keep the queue fresh
+</script>
+</body></html>

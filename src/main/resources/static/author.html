@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Author Portal</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><b>BookLeaf Author Portal</b><span><span id="who"></span> <button class="sec" onclick="logout()">Logout</button></span></header>
+<div class="wrap">
+  <nav>
+    <button onclick="show('books')">My Books</button>
+    <button onclick="show('new')">Submit a Query</button>
+    <button onclick="show('tickets')">My Tickets</button>
+  </nav>
+
+  <div id="books" class="card"></div>
+
+  <div id="new" class="card" hidden>
+    <h3>Submit a support query</h3>
+    <label>Which book is this about?</label><select id="bookId"></select>
+    <label>Subject</label><input id="subject" maxlength="200">
+    <label>Description</label><textarea id="description" rows="6"></textarea>
+    <label>Attachment (optional, UI only)</label><input id="file" type="file">
+    <button onclick="submitTicket()">Submit</button>
+    <p id="newMsg"></p>
+  </div>
+
+  <div id="tickets" hidden></div>
+</div>
+<script src="common.js"></script>
+<script>
+requireRole('AUTHOR');
+let timer = null;
+
+function show(name) {
+  ['books', 'new', 'tickets'].forEach(id => document.getElementById(id).hidden = id !== name);
+  clearInterval(timer);
+  if (name === 'tickets') { loadTickets(); timer = setInterval(loadTickets, 5000); } // near-real-time polling
+}
+
+async function loadBooks() {
+  const books = await api('/api/books');
+  const el = document.getElementById('books');
+  if (!books.length) { el.innerHTML = '<p>You have no books yet.</p>'; return; }
+  el.innerHTML = '<h3>My Books</h3><div class="scroll"><table><tr><th>Title</th><th>ISBN</th><th>Genre</th><th>Published</th><th>Status</th><th>MRP</th><th>Copies sold</th><th>Royalty earned</th><th>Paid</th><th>Pending</th></tr>' +
+    books.map(b => `<tr><td>${esc(b.title)}</td><td>${esc(b.isbn)}</td><td>${esc(b.genre)}</td>
+      <td>${esc(val(b.publicationDate))}</td><td>${esc(b.status)}</td><td>${money(b.mrp)}</td>
+      <td>${b.copiesSold}</td><td>${money(b.royaltyEarned)}</td><td>${money(b.royaltyPaid)}</td><td>${money(b.royaltyPending)}</td></tr>`).join('') +
+    '</table></div>';
+  document.getElementById('bookId').innerHTML = '<option value="">General / Account Level</option>' +
+    books.map(b => `<option value="${esc(b.id)}">${esc(b.title)}</option>`).join('');
+}
+
+async function submitTicket() {
+  const msg = document.getElementById('newMsg');
+  msg.className = ''; msg.textContent = '';
+  try {
+    const f = document.getElementById('file').files[0];
+    await api('/api/tickets', 'POST', {
+      bookId: document.getElementById('bookId').value || null,
+      subject: document.getElementById('subject').value,
+      description: document.getElementById('description').value,
+      attachmentName: f ? f.name : null });
+    document.getElementById('subject').value = '';
+    document.getElementById('description').value = '';
+    document.getElementById('file').value = '';
+    show('tickets');
+  } catch (e) {
+    msg.className = 'err';
+    msg.textContent = e.data && e.data.fields ? Object.values(e.data.fields).join(', ') : e.message;
+  }
+}
+
+async function loadTickets() {
+  const list = await api('/api/tickets');
+  const el = document.getElementById('tickets');
+  if (!list.length) { el.innerHTML = '<div class="card">No tickets yet. Use "Submit a Query" to raise one.</div>'; return; }
+  el.innerHTML = list.map(t => `<div class="card">
+    <b>#${t.id} ${esc(t.subject)}</b> <span class="badge ${t.status}">${t.status.replace('_', ' ')}</span>
+    <div class="muted">${esc(t.bookTitle)} · ${dt(t.createdAt)}${t.attachmentName ? ' · 📎 ' + esc(t.attachmentName) : ''}</div>
+    <div class="msg AUTHOR">${esc(t.description)}</div>
+    ${t.messages.length ? t.messages.map(m => `<div class="msg ${m.senderRole}"><b>${esc(m.senderName)}</b> <span class="muted">${dt(m.createdAt)}</span><br>${esc(m.body)}</div>`).join('')
+      : '<div class="muted">Waiting for a response from the BookLeaf team.</div>'}
+  </div>`).join('');
+}
+
+loadBooks().catch(e => document.getElementById('books').textContent = e.message);
+</script>
+</body></html>
